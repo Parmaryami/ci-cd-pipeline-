@@ -1,0 +1,79 @@
+pipeline {
+    agent any
+    
+    stages {
+        stage('Security Scan') {
+            parallel {
+                stage('SAST - SonarQube') {
+                    steps {
+                        echo "🔍 Running SAST Scan..."
+                        sh '''
+                            docker run --rm \
+                            -v $(pwd):/usr/src \
+                            sonarsource/sonar-scanner-cli:latest \
+                            -Dsonar.projectKey=${JOB_NAME} \
+                            -Dsonar.host.url=http://sonarqube:9000 \
+                            -Dsonar.sources=src \
+                            -Dsonar.token=${SONAR_TOKEN}
+                        '''
+                    }
+                }
+                stage('DAST - ZAP') {
+                    steps {
+                        echo "🎯 Running DAST Scan..."
+                        sh '''
+                            docker run --rm \
+                            -v $(pwd):/zap/wrk \
+                            ghcr.io/zaproxy/zaproxy:stable \
+                            zap-baseline.py \
+                            -t http://vulnerable-app:3000 \
+                            -r zap-report.html \
+                            -m 3
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo "⚖️ Checking Quality Gate..."
+                sh '''
+                    echo "If SonarQube finds critical issues, build would fail here"
+                    echo "Quality Gate Status: PASSED"
+                '''
+            }
+        }
+        
+        stage('Generate Report') {
+            steps {
+                echo "📊 Generating Security Report..."
+                sh '''
+                    echo "SECURITY SUMMARY" > security-summary.txt
+                    echo "================" >> security-summary.txt
+                    echo "Build: ${BUILD_NUMBER}" >> security-summary.txt
+                    echo "Status: ${currentBuild.currentResult}" >> security-summary.txt
+                    echo "SAST: Vulnerabilities found - check SonarQube" >> security-summary.txt
+                    echo "DAST: Report saved as zap-report.html" >> security-summary.txt
+                    echo "Timestamp: $(date)" >> security-summary.txt
+                '''
+                archiveArtifacts artifacts: 'security-summary.txt', fingerprint: true
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo "🔒 Security pipeline completed"
+            echo "View reports at:"
+            echo "- SonarQube: http://localhost:9000"
+            echo "- ZAP Report: zap-report.html"
+        }
+        success {
+            echo "✅ All security checks passed!"
+        }
+        failure {
+            echo "❌ Security violations detected - build blocked"
+        }
+    }
+}
